@@ -1,0 +1,87 @@
+{
+  "title": "Email_for_long_and_failed_jobs",
+  "tasks": {
+    "pull_long_running_jobs": {
+      "name": "pull_long_running_jobs",
+      "action": "dynatrace.automations:run-javascript",
+      "description": "Build a custom task running js Code",
+      "input": {
+        "script": "import { queryExecutionClient } from '@dynatrace-sdk/client-query';\n\nfunction utcToLocal(utcTimestamp) {\n  const date = new Date(utcTimestamp);\n  return date.toLocaleString(); // This converts to local timezone\n}\n\n\nexport default async function () {\n  const timeout = 60;\n\n  // Query to pull batchJob data\n  const query = `fetch logs,scanLimitGBytes: -1, from:now()-30m\n| filter matchesPhrase(content, \"JOBS\") AND  matchesPhrase(content, \"RunID\")\n| filter matchesValue(dt.entity.host, \"HOST-A6611AE1965B66BD\")\n| parse content , \"\nLD 'JOBS.' WORD:Job\nLD 'RunID ' STRING:RunId\nLD:status\"\n| fields timestamp, Job, status, content, RunId\n| filterOut status == \".\"\n| fieldsAdd start_time=if(contains(content,\"started.\"),timestamp)\n| fieldsAdd end_time=if(contains(content,\"ended normally.\"),timestamp)\n| fields timestamp, content, Job, status, RunId,start_time,end_time`;\n  \n  console.log(query);\n  try {\n    const response = await queryExecutionClient.queryExecute({ \n      body: { \n        query, \n        requestTimeoutMilliseconds: timeout * 1000, \n        fetchTimeoutSeconds: timeout \n      } \n    });\n    \n    const recordSet = response.result.records;\n    //console.log(recordSet);\n\n    const batch = {};\n    const statusLocked = {}; // Lock the status once I find exit return for a runId\n\n    for (const record of recordSet) {\n      const runId = record['RunId'];\n      let status = record[\"status\"]?.trim() || \"\";\n      console.log(`RunId: ${runId}, Raw status: ${status}`);\n\n      if (!batch[runId]) {\n        batch[runId] = {\n          Job: record[\"Job\"],\n          run_id: runId,\n          Status: \"\",\n          JobStarted: null,\n          JobEnded: null,\n          Duration: \"NA\"\n        };\n        statusLocked[runId] = false;\n      }\n\n      if (record[\"start_time\"]) batch[runId].JobStarted = utcToLocal(record[\"start_time\"]);\n      if (record[\"end_time\"]) batch[runId].JobEnded = utcToLocal(record[\"end_time\"]);\n      \n      // Update status field for runId only if it's not locked\n      if (!statusLocked[runId]) {\n        if (status.toLowerCase().includes(\"ended with return code\")) {\n          batch[runId].Status = \"Failed\";\n          statusLocked[runId] = true;\n        } else if (status) {\n          if (status == \"started.\") {\n            batch[runId].Status = \"Running\";\n          }\n          else if (status == \"ended normally.\") {\n            batch[runId].Status = \"Completed without errors\";\n            statusLocked[runId] = true;\n          }\n          else {\n            batch[runId].Status = status;\n          }\n        }\n      }\n    }\n\n    let longJobList = [];\n    for (const runId in batch) {\n      const job = batch[runId];\n      const currentTime = new Date();\n\n      const duration = currentTime - job.JobStarted;\n      job.Duration = `${duration / 1000} seconds`;\n      console.log(runId, \"->\", job.Status, \" + \", job.Duration);\n      \n      if (duration > 5 * 60  && job.Status == \"Running\") {  // 5 minutes\n          longJobList.push(job);\n        }\n      }\n    console.log(longJobList);\n    return longJobList;\n  } catch (error) {\n    console.error(\"An error occurred:\", error);\n    throw error;\n  }\n}"
+      },
+      "position": {
+        "x": -1,
+        "y": 1
+      },
+      "predecessors": []
+    },
+    "send_consolidated_email": {
+      "name": "send_consolidated_email",
+      "action": "dynatrace.email:send-email",
+      "description": "Send email",
+      "input": {
+        "cc": [],
+        "to": [
+          "nikhil.goenka@dynatrace.com"
+        ],
+        "bcc": [],
+        "taskId": "{{ task().id }}",
+        "content": "Hi Team,\n\n  The following jobs are long running jobs and may need your attention: \n\n  {% for my_item in result(\"pull_long_running_jobs\") %}\n      {{ my_item }}\n  {% endfor %}\n\nWe found the following errorenous jobs:\n    Start-time Job-name RunId End-time\n{% for item in result('find_errorenous_batch_jobs').records %}\n  - {{ item.start_time }} {{ item.Job }} {{ item.RunId }} {{ item.end_time }}\n{% endfor %}\n\n\nThanks\n\n",
+        "subject": "Failed and long running jobs report",
+        "executionId": "{{ execution().id }}",
+        "environmentUrl": "https://obg18747.apps.dynatrace.com"
+      },
+      "position": {
+        "x": 0,
+        "y": 2
+      },
+      "predecessors": [
+        "find_errorenous_batch_jobs",
+        "pull_long_running_jobs"
+      ],
+      "conditions": {
+        "states": {
+          "pull_long_running_jobs": "OK",
+          "find_errorenous_batch_jobs": "OK"
+        },
+        "custom": ""
+      }
+    },
+    "find_errorenous_batch_jobs": {
+      "name": "find_errorenous_batch_jobs",
+      "action": "dynatrace.automations:execute-dql-query",
+      "description": "Executes DQL query",
+      "input": {
+        "query": "fetch logs, scanLimitGBytes: -1, from:now()-30m\n| filter matchesPhrase(content, \"JOBS\") AND  matchesPhrase(content, \"RunID\")\n| filter matchesValue(dt.entity.host, \"HOST-A6611AE1965B66BD\")\n| filter contains(content,\"return\")\n| parse content , \"\nLD 'JOBS.' WORD:Job\nLD 'RunID ' STRING:RunId\nLD:status\"\n| fields timestamp, Job, status, content, RunId\n| fieldsAdd start_time=if(contains(content,\"started.\"),timestamp)\n| fieldsAdd end_time=if(contains(content,\"exit\"),timestamp)\n| fields start_time, Job, RunId, end_time\n",
+        "failOnEmptyResult": false
+      },
+      "position": {
+        "x": 1,
+        "y": 1
+      },
+      "predecessors": []
+    }
+  },
+  "description": "",
+  "actor": "f0185280-8f86-488c-afca-9759e28359c4",
+  "owner": "f0185280-8f86-488c-afca-9759e28359c4",
+  "ownerType": "USER",
+  "isPrivate": false,
+  "trigger": {
+    "schedule": {
+      "isActive": false,
+      "isFaulty": false,
+      "trigger": {
+        "type": "interval",
+        "intervalMinutes": 30
+      },
+      "rule": null,
+      "filterParameters": {
+        "earliestStart": "2024-07-23",
+        "earliestStartTime": "00:00"
+      },
+      "timezone": "Australia/Sydney",
+      "inputs": {}
+    }
+  },
+  "schemaVersion": 3
+}
