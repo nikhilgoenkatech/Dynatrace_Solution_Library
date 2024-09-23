@@ -3,7 +3,7 @@
 While dashboards provide valuable insights into batch jobs, this can be extended to receive alerts for long-running or failed jobs. Additionally, orchestration and complete automation can be achieved using Dynatrace's `Hypermodel AI` and `Context-aware` analysis, enabling automated actions based on these insights. 
 
 ### Workflow to alert on long-running or failed jobs.  
-Although Dynatrace's AI can automatically detect and alert on job duration anomalies or increased failure rates, for business-critical jobs, this can be managed more effectively through a workflow, as illustrated [here](../img/Workflow_long_running_job.png)  
+Although Dynatrace's AI can automatically detect and alert on job duration anomalies or increased failure rates, for business-critical jobs, this can be managed more effectively through a workflow, as illustrated ![below](../img/Workflow_long_running.png)  
 
 
 ### Orchestration of the BatchJobs  
