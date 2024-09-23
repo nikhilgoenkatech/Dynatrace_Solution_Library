@@ -1,4 +1,5 @@
-## Beyond insights  
+## Beyond Insights: Alerts and Orchestration for Business-Critical Jobs
+
 While dashboards provide valuable insights into batch jobs, this can be extended to receive alerts for long-running or failed jobs. Additionally, orchestration and complete automation can be achieved using Dynatrace's `Hypermodel AI` and `Context-aware` analysis, enabling automated actions based on these insights. 
 
 ### Workflow to alert on long-running or failed jobs.  
