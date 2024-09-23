@@ -7,4 +7,6 @@ Although Dynatrace's AI can automatically detect and alert on job duration anoma
 
 ### Orchestration of the BatchJobs  
 Batch job management can be efficiently orchestrated using workflows and predictive analysis to schedule and run jobs optimally. With Davis AI identifying root causes, workflows can be used to stop erroneous batch executions.  
+
 Additionally, Davis Prediction analysis in conjunction with workflow can act to reschedule or paused jobs to ensure optimal resource utilization, preventing any negative impact on the application landscape.  
+
