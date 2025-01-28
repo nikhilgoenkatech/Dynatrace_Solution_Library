@@ -1,0 +1,64 @@
+{
+  "id": "f450bba8-aabe-425e-8021-cafc45f83872",
+  "title": "consolidated_tenant_view",
+  "tasks": {
+    "insert_apdex_data": {
+      "name": "insert_apdex_data",
+      "action": "dynatrace.automations:run-javascript",
+      "description": "Build a custom task running js Code",
+      "input": {
+        "script": "// optional import of sdk modules\nimport { execution } from '@dynatrace-sdk/automation-utils';\nimport { metricsClient } from \"@dynatrace-sdk/client-classic-environment-v2\";\n\nexport default async function ({ executionId }) {\n  const ex = await execution(executionId);\n  \n  //Read the output of \"pull_apdex_data_from_remote_tenants\" task\n  var result = await ex.result(\"pull_apdex_data_from_remote_tenants\");  \n\n  //Form the metric body for ingestion of metrics\n  var body = \"\";\n  for (const [key, value] of Object.entries(result[\"apdexScore\"])) {\n    body = body + \"remoteapdex,tenant.name=\" + `${key}` + \" \" + `${value}` + \"\\n\";\n    //console.log(`${key} ${value}`);\n  }\n  console.log(body);\n\n  //Insert the metrics in master tenant (code reference https://developer.dynatrace.com/develop/sdks/client-classic-environment-v2/#parameters-76)\n  const data = await metricsClient.ingest({\n    body: body,\n  });\n\n  console.log('Data has been inserted as expected', ex.trigger);\n\n  return { triggeredBy: ex.trigger };\n}\n\n"
+      },
+      "position": {
+        "x": 0,
+        "y": 2
+      },
+      "predecessors": [
+        "pull_apdex_data_from_remote_tenants"
+      ],
+      "conditions": {
+        "states": {
+          "pull_apdex_data_from_remote_tenants": "OK"
+        }
+      }
+    },
+    "pull_apdex_data_from_remote_tenants": {
+      "name": "pull_apdex_data_from_remote_tenants",
+      "action": "dynatrace.automations:run-javascript",
+      "description": "Build a custom task running js Code",
+      "input": {
+        "script": "// optional import of sdk modules\nimport { execution } from '@dynatrace-sdk/automation-utils';\n\nexport default async function ({ executionId }) {\n  // Different tenants\n  var tenants = {\n        GoDigital: {\n            dynatraceUrl: \"https://xxx/api/v2/metrics/query\",\n            apiToken: \"xxx.xxx.xxxxx\",\n            applicationId: \"APPLICATION-EA7C4B59F27D43EB\"\n        },\n        Hongkong: {\n            dynatraceUrl: \"https://yyyy.live.dynatrace.com/api/v2/metrics/query\",\n            apiToken: \"xxx.xxx.xxxxxxx\",\n            applicationId: \"APPLICATION-5DCD0C470BC8680A\"\n        }\n    };\n  \n  const ex = await execution(executionId);\n  var resultObject = await fetchAllApdexScores(tenants);\n\n  return { triggeredBy: ex.trigger, apdexScore: resultObject };\n}\n\n//Function to populate apdex\nasync function fetchAllApdexScores(tenants) {\n    console.log(\"In fetchAllApdexScores\");\n    var resultObject = {};\n\n    for (var tenant in tenants) {\n        if (tenants.hasOwnProperty(tenant)) {\n            var tenantInfo = tenants[tenant];\n            var apdexValues = await fetchApdex(tenantInfo.dynatraceUrl, tenantInfo.apiToken, tenantInfo.applicationId);\n            if (apdexValues !== null) {\n                resultObject[tenant] = apdexValues;\n            }\n        }\n    }\n\n    console.log(\"Apdex Scores:\", JSON.stringify(resultObject, null, 2));\n    return resultObject;\n}\n\n//Function to make API call to pull the metric data\nasync function fetchApdex(dynatraceUrl, apiToken, applicationId) {\n    console.log(\"In fetchApdex for: \", dynatraceUrl, \" \" , applicationId);\n    var queryUrl = dynatraceUrl + \"?metricSelector=builtin:apps.web.apdex.userType:splitBy(\\\"dt.entity.application\\\"):names:fold&entitySelector=entityId(\\\"\" + applicationId + \"\\\")&from=now-1h\";\n\n    var headers = new Headers();\n    headers.append(\"Authorization\", \"Api-Token \" + apiToken);\n    headers.append(\"Accept\", \"application/json; charset=utf-8\");\n\n    var requestOptions = {\n        method: 'GET',\n        headers: headers\n    };\n\n    try {\n        var response = await fetch(queryUrl, requestOptions);\n        var result = await response.json();\n        return result.result[0].data[0].values;\n    } catch (error) {\n        console.log(\"Error fetching Apdex score for application \" + applicationId + \":\", error);\n        return null;\n    }\n}\n"
+      },
+      "position": {
+        "x": 0,
+        "y": 1
+      },
+      "predecessors": []
+    }
+  },
+  "description": "",
+  "actor": "56950d1e-d9e8-4c6f-9c70-46b093c4434d",
+  "owner": "56950d1e-d9e8-4c6f-9c70-46b093c4434d",
+  "ownerType": "USER",
+  "isPrivate": true,
+  "trigger": {
+    "schedule": {
+      "isActive": true,
+      "isFaulty": false,
+      "trigger": {
+        "type": "interval",
+        "intervalMinutes": 120
+      },
+      "rule": null,
+      "filterParameters": {
+        "earliestStart": "2025-01-28",
+        "earliestStartTime": "23:32"
+      },
+      "timezone": "Australia/Sydney",
+      "inputs": {},
+      "nextExecution": "2025-01-28T14:32:00.000Z"
+    }
+  },
+  "schemaVersion": 3,
+  "type": "STANDARD"
+}
