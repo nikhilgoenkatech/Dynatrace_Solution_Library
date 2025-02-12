@@ -1,0 +1,382 @@
+metadata:
+  version: "1"
+  dependencies:
+    apps:
+      - id: dynatrace.automations
+        version: ^1.1428.0
+  inputs: []
+workflow:
+  title: consolidated_tenant_view_without_token
+  tasks:
+    configure_tenants:
+      name: configure_tenants
+      description: Build a custom task running js Code
+      action: dynatrace.automations:run-javascript
+      input:
+        script: >-
+          import { execution } from '@dynatrace-sdk/automation-utils';
+
+
+          //Please note this is a MVP and is not officially supported. Review
+          and modify the code as per the organisation guidelines.
+
+          export default async function ({ executionId }) {
+            var tenants = {
+                  GoDigital: {
+                      dynatraceUrl: "https://yyyy.live.dynatrace.com/",
+                      apiToken: "token" //Token with read.entities and read.metrics permission
+                  },
+                  Hongkong: {
+                      dynatraceUrl: "https://xxxx.live.dynatrace.com/",
+                      apiToken: "token" //Token with read.entities and read.metrics permission         
+                  }
+            };
+
+            var metrics_with_dimension = {
+              "HOST": [
+                {
+                  "name": "remotecpu",
+                  "metric_string": "builtin:host.cpu.user:fold"
+                },
+                {
+                  "name": "remoteidlecpu",
+                  "metric_string": "builtin:host.cpu.idle:fold"
+                }
+              ],
+              "SERVICE": [
+                {
+                  "name": "remotesvcrsp",
+                  "metric_string": "builtin:service.response.time:fold"
+                },
+                {
+                  "name": "remotesvccnt",
+                  "metric_string": "builtin:service.requestCount.total:fold"
+                }    
+              ],
+              "APPLICATION": [
+                {
+                  "name": "remoteapdex",
+                  "metric_string": "builtin:apps.web.apdex.userType:fold"
+                }   
+              ]
+            }
+
+
+            const ex = await execution(executionId);
+            console.log('Automated script execution on behalf of', ex.trigger);
+
+            return { triggeredBy: ex.trigger, tenant: tenants, metrics_with_dimension: metrics_with_dimension };
+          }
+      position:
+        x: 0
+        y: 1
+      predecessors: []
+    insert_apdex_data:
+      name: insert_apdex_data
+      description: Build a custom task running js Code
+      action: dynatrace.automations:run-javascript
+      active: true
+      input:
+        script: >+
+          // optional import of sdk modules
+
+          import { execution } from '@dynatrace-sdk/automation-utils';
+
+          import { metricsClient } from
+          "@dynatrace-sdk/client-classic-environment-v2";
+
+
+          export default async function ({ executionId }) {
+            const ex = await execution(executionId);
+            
+            //Read the output of "pull_apdex_data_from_remote_tenants" task
+            var data = await ex.result("pull_data_from_remote_tenants");  
+            //console.log(data);
+
+            for (var tenant in data["value"]) {
+                console.log("Tenant:", tenant);
+              
+                // Iterate over the metrics
+                var entitiesNmetrics = data["value"][tenant];
+
+                for (var entity in entitiesNmetrics) {
+                  var metrics = entitiesNmetrics[entity];
+                  
+                  for (var metric in metrics) {
+                    // Iterate over the key and values
+                    var keys = metrics[metric];
+                    var body = "";
+                    
+                    for (var key in keys) {
+                        //console.log("Host:", key);
+                        //console.log("Values:", keys[key]);
+                        if (keys.hasOwnProperty(key) && keys[key] != "") {
+                          body = body + metric + ",tenant.name=" + tenant + "," + entity.toLowerCase() + ".name=\"" + key + "\" " + keys[key][0] + "\n";
+                      }  
+                    }
+                    //console.log("BODY:", body);
+                    //Insert the metrics in master tenant (code reference https://developer.dynatrace.com/develop/sdks/client-classic-environment-v2/#parameters-76)
+                    const ingestdata = await metricsClient.ingest({
+                      body: body,
+                    });
+                    console.log(ingestdata);
+                  }
+                }
+              }
+
+            console.log('Data has been inserted as expected', ex.trigger);
+
+            return { triggeredBy: ex.trigger };
+          }
+
+      position:
+        x: 0
+        y: 4
+      predecessors:
+        - pull_data_from_remote_tenants
+      conditions:
+        states:
+          pull_data_from_remote_tenants: OK
+    populate_entity_list:
+      name: populate_entity_list
+      description: Run custom JavaScript code.
+      action: dynatrace.automations:run-javascript
+      input:
+        script: >
+          import { execution } from '@dynatrace-sdk/automation-utils';
+
+
+          export default async function ({ executionId }) {
+            const ex = await execution(executionId);
+            
+            const result = await ex.result("configure_tenants");
+            var resultObject = await fetchEntities(result["tenant"], result["metrics_with_dimension"]);
+            
+            console.log('Automated script execution on behalf of', ex.trigger);
+
+            console.log(result["tenant"]);
+            return { triggeredBy: ex.trigger, data: resultObject };
+          }
+
+
+          // Function to populate entities
+
+          async function fetchEntities(tenants, metrics_with_dimension) {
+              console.log("In fetchEntities");
+              var resultObject = {};
+
+              for (var tenant in tenants) {
+                  if (tenants.hasOwnProperty(tenant)) {
+                      var tenantInfo = tenants[tenant];
+                      const dt_entities = ["HOST", "SERVICE","APPLICATION"];
+
+                      for (var k = 0; k < dt_entities.length; k++) {
+                          if (metrics_with_dimension.hasOwnProperty(dt_entities[k])) {
+                              console.log("Going for: ", dt_entities[k]);
+
+                              var entity = dt_entities[k];
+                              var values = await populateEntityList(tenantInfo.dynatraceUrl, tenantInfo.apiToken, dt_entities[k]);
+
+                              if (values !== null) {
+                                  if (!resultObject[tenant]) {
+                                      console.log("Initializing object for: ", tenant);
+                                      resultObject[tenant] = {
+                                          ...tenants[tenant],
+                                          metricsNentities: {}
+                                      };
+                                  }
+
+                                  if (!resultObject[tenant].metricsNentities[entity]) {
+                                      console.log("Initializing metrics for: ", entity);
+                                      resultObject[tenant].metricsNentities[entity] = {
+                                          metrics: metrics_with_dimension[entity],
+                                          entityList: []
+                                      };
+                                  }
+
+                                  resultObject[tenant].metricsNentities[entity].entityList = values;
+                              }
+                          } else {
+                              console.log(`Key ${dt_entities[k]} not found in metrics_with_dimension`);
+                          }
+                      }
+                  }
+              }
+              console.log(resultObject);
+              return resultObject;
+          }
+
+
+          async function populateEntityList(dynatraceUrl, apiToken, entityType)
+          {
+              console.log("In populateEntityList for: ", dynatraceUrl);
+              var queryUrl = dynatraceUrl + "api/v2/entities?pageSize=500&entitySelector=type(\"" + entityType + "\")";
+              console.log(queryUrl);
+
+              var headers = new Headers();
+              headers.append("Authorization", "Api-Token " + apiToken);
+              headers.append("Accept", "application/json; charset=utf-8");
+
+              var requestOptions = {
+                  method: 'GET',
+                  headers: headers
+              };
+
+              try {
+                  var response = await fetch(queryUrl, requestOptions);
+                  var result = await response.json();
+
+                  //console.log("RESULT", result["entities"]);
+                  return result["entities"];
+              } catch (error) {
+                  console.log("Error fetching for " + entityType + ":", error);
+                  return null;
+              }
+          }
+      position:
+        x: 0
+        y: 2
+      predecessors:
+        - configure_tenants
+      conditions:
+        states:
+          configure_tenants: OK
+    pull_data_from_remote_tenants:
+      name: pull_data_from_remote_tenants
+      description: Build a custom task running js Code
+      action: dynatrace.automations:run-javascript
+      active: true
+      input:
+        script: >-
+          import { execution } from '@dynatrace-sdk/automation-utils';
+
+
+          export default async function ({ executionId }) {
+            const ex = await execution(executionId);
+            const result = await ex.result("populate_entity_list");
+            
+            //console.log(result["tenant"], result["metrics_with_dimension"], result["entityList"]);
+
+            var resultObject = await fetchAllMetrics(result["data"]);
+            return { triggeredBy: ex.trigger, value: resultObject };
+          }
+
+
+          // Function to populate all metrics
+
+          async function fetchAllMetrics(data) {
+              console.log("In fetchAllMetrics");
+              var resultObject = {};
+
+              for (var tenant in data) {
+                  if (data.hasOwnProperty(tenant)) {
+                      var tenantInfo = data[tenant];
+                      //console.log("Fetching for tenant", tenantInfo);
+                    
+                      for (var entity in tenantInfo["metricsNentities"]) {
+                        if (tenantInfo["metricsNentities"].hasOwnProperty(entity)) {
+                          console.log("Type:", entity);
+
+                          var metrics = tenantInfo["metricsNentities"][entity]["metrics"];
+                          var entityList = tenantInfo["metricsNentities"][entity]["entityList"];
+                          
+                          for (var i = 0; i < metrics.length; i++) {
+                              var metric = metrics[i]["name"];
+                              var metric_string = metrics[i]["metric_string"];
+
+                              //console.log("metrics:", metric_string, metric);
+                              var values = await fetchMetrics(tenantInfo["dynatraceUrl"],tenantInfo["apiToken"], metric_string, entityList);
+                              if (values !== null) {
+                                  if (!resultObject[tenant]) {
+                                      resultObject[tenant] = {};
+                                  }
+                                  if (!resultObject[tenant][entity]) {
+                                      resultObject[tenant][entity] = {};
+                                  }
+                                  if (!resultObject[tenant][entity][metric]) {
+                                      resultObject[tenant][entity][metric] = {};
+                                  }
+
+                                  resultObject[tenant][entity][metric] = values;
+                                  //if (tenantInfo["dynatraceUrl"] == "https://ykd61701.sprint.dynatracelabs.com/") {
+                                  //  console.log("allValues->:", resultObject);
+                                  //}                  
+                                
+                              }
+                           }
+                        }
+                     }
+                  }
+              }
+              //console.log("Metrics:", JSON.stringify(resultObject, null, 4));
+              console.log("Metrics:", resultObject);
+              return resultObject;
+          }
+
+
+          // Function to make API call to pull the metric data
+
+          async function fetchMetrics(dynatraceUrl, apiToken, metric_string,
+          entityList) {
+              console.log("In fetchMetrics for: ", dynatraceUrl, metric_string);
+              var allValues = {};
+
+            
+              for (var j = 0; j < entityList.length; j++) {
+                var queryUrl = dynatraceUrl + "api/v2/metrics/query?metricSelector=" + metric_string + "&entitySelector=entityId(\"" + entityList[j].entityId +  "\")";
+                console.log(queryUrl, entityList[j].entityId, entityList[j].displayName );
+            
+                var headers = new Headers();
+                headers.append("Authorization", "Api-Token " + apiToken);
+                headers.append("Accept", "application/json; charset=utf-8");
+            
+                var requestOptions = {
+                    method: 'GET',
+                    headers: headers
+                };
+            
+                try {
+                    var response = await fetch(queryUrl, requestOptions);
+                    var result = await response.json();
+                  
+                  if (!allValues[entityList[j].displayName]) {
+                      allValues[entityList[j].displayName] = [];
+                  }
+                  if (result.result && result.result.length > 0 && result.result[0].data && result.result[0].data.length > 0) {    
+                    allValues[entityList[j].displayName].push(result.result[0].data[0].values[0]);  
+                  }
+                  
+                  
+              } catch (error) {
+                  console.log("Error fetching for " + metric_string + ":", error);
+              }
+            }
+            return allValues;
+          }
+      position:
+        x: 0
+        y: 3
+      predecessors:
+        - populate_entity_list
+      conditions:
+        states:
+          populate_entity_list: OK
+  description: ""
+  trigger:
+    schedule:
+      rule: null
+      trigger:
+        type: interval
+        intervalMinutes: 120
+      timezone: Australia/Sydney
+      isActive: false
+      isFaulty: false
+      nextExecution: null
+      filterParameters:
+        earliestStart: 2025-01-28
+        earliestStartTime: 23:32
+      inputs: {}
+  schemaVersion: 3
+  result: null
+  input: {}
+  type: STANDARD
