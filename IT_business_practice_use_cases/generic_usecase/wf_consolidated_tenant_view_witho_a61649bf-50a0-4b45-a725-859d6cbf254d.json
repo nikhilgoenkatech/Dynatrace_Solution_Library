@@ -1,0 +1,108 @@
+{
+  "id": "a61649bf-50a0-4b45-a725-859d6cbf254d",
+  "title": "consolidated_tenant_view_without_token",
+  "tasks": {
+    "configure_tenants": {
+      "name": "configure_tenants",
+      "input": {
+        "script": "import { execution } from '@dynatrace-sdk/automation-utils';\n\n//Please note this is a MVP and is not officially supported. Review and modify the code as per the organisation guidelines.\nexport default async function ({ executionId }) {\n  var tenants = {\n        GoDigital: {\n            dynatraceUrl: \"https://yyyy.live.dynatrace.com/\",\n            apiToken: \"token\" //Token with read.entities and read.metrics permission\n        },\n        Hongkong: {\n            dynatraceUrl: \"https://xxxx.live.dynatrace.com/\",\n            apiToken: \"token\" //Token with read.entities and read.metrics permission         \n        }\n  };\n\n  var metrics_with_dimension = {\n    \"HOST\": [\n      {\n        \"name\": \"remotecpu\",\n        \"metric_string\": \"builtin:host.cpu.user:fold\"\n      },\n      {\n        \"name\": \"remoteidlecpu\",\n        \"metric_string\": \"builtin:host.cpu.idle:fold\"\n      }\n    ],\n    \"SERVICE\": [\n      {\n        \"name\": \"remotesvcrsp\",\n        \"metric_string\": \"builtin:service.response.time:fold\"\n      },\n      {\n        \"name\": \"remotesvccnt\",\n        \"metric_string\": \"builtin:service.requestCount.total:fold\"\n      }    \n    ],\n    \"APPLICATION\": [\n      {\n        \"name\": \"remoteapdex\",\n        \"metric_string\": \"builtin:apps.web.apdex.userType:fold\"\n      }   \n    ]\n  }\n\n\n  const ex = await execution(executionId);\n  console.log('Automated script execution on behalf of', ex.trigger);\n\n  return { triggeredBy: ex.trigger, tenant: tenants, metrics_with_dimension: metrics_with_dimension };\n}"
+      },
+      "action": "dynatrace.automations:run-javascript",
+      "position": {
+        "x": 0,
+        "y": 1
+      },
+      "description": "Build a custom task running js Code",
+      "predecessors": []
+    },
+    "insert_apdex_data": {
+      "name": "insert_apdex_data",
+      "input": {
+        "script": "// optional import of sdk modules\nimport { execution } from '@dynatrace-sdk/automation-utils';\nimport { metricsClient } from \"@dynatrace-sdk/client-classic-environment-v2\";\n\nexport default async function ({ executionId }) {\n  const ex = await execution(executionId);\n  \n  //Read the output of \"pull_apdex_data_from_remote_tenants\" task\n  var data = await ex.result(\"pull_data_from_remote_tenants\");  \n  //console.log(data);\n\n  for (var tenant in data[\"value\"]) {\n      console.log(\"Tenant:\", tenant);\n    \n      // Iterate over the metrics\n      var entitiesNmetrics = data[\"value\"][tenant];\n\n      for (var entity in entitiesNmetrics) {\n        var metrics = entitiesNmetrics[entity];\n        \n        for (var metric in metrics) {\n          // Iterate over the key and values\n          var keys = metrics[metric];\n          var body = \"\";\n          \n          for (var key in keys) {\n              //console.log(\"Host:\", key);\n              //console.log(\"Values:\", keys[key]);\n              if (keys.hasOwnProperty(key) && keys[key] != \"\") {\n                body = body + metric + \",tenant.name=\" + tenant + \",\" + entity.toLowerCase() + \".name=\\\"\" + key + \"\\\" \" + keys[key][0] + \"\\n\";\n            }  \n          }\n          //console.log(\"BODY:\", body);\n          //Insert the metrics in master tenant (code reference https://developer.dynatrace.com/develop/sdks/client-classic-environment-v2/#parameters-76)\n          const ingestdata = await metricsClient.ingest({\n            body: body,\n          });\n          console.log(ingestdata);\n        }\n      }\n    }\n\n  console.log('Data has been inserted as expected', ex.trigger);\n\n  return { triggeredBy: ex.trigger };\n}\n\n"
+      },
+      "action": "dynatrace.automations:run-javascript",
+      "active": true,
+      "position": {
+        "x": 0,
+        "y": 4
+      },
+      "conditions": {
+        "states": {
+          "pull_data_from_remote_tenants": "OK"
+        }
+      },
+      "description": "Build a custom task running js Code",
+      "predecessors": [
+        "pull_data_from_remote_tenants"
+      ]
+    },
+    "populate_entity_list": {
+      "name": "populate_entity_list",
+      "input": {
+        "script": "import { execution } from '@dynatrace-sdk/automation-utils';\n\nexport default async function ({ executionId }) {\n  const ex = await execution(executionId);\n  \n  const result = await ex.result(\"configure_tenants\");\n  var resultObject = await fetchEntities(result[\"tenant\"], result[\"metrics_with_dimension\"]);\n  \n  console.log('Automated script execution on behalf of', ex.trigger);\n\n  console.log(result[\"tenant\"]);\n  return { triggeredBy: ex.trigger, data: resultObject };\n}\n\n// Function to populate entities\nasync function fetchEntities(tenants, metrics_with_dimension) {\n    console.log(\"In fetchEntities\");\n    var resultObject = {};\n\n    for (var tenant in tenants) {\n        if (tenants.hasOwnProperty(tenant)) {\n            var tenantInfo = tenants[tenant];\n            const dt_entities = [\"HOST\", \"SERVICE\",\"APPLICATION\"];\n\n            for (var k = 0; k < dt_entities.length; k++) {\n                if (metrics_with_dimension.hasOwnProperty(dt_entities[k])) {\n                    console.log(\"Going for: \", dt_entities[k]);\n\n                    var entity = dt_entities[k];\n                    var values = await populateEntityList(tenantInfo.dynatraceUrl, tenantInfo.apiToken, dt_entities[k]);\n\n                    if (values !== null) {\n                        if (!resultObject[tenant]) {\n                            console.log(\"Initializing object for: \", tenant);\n                            resultObject[tenant] = {\n                                ...tenants[tenant],\n                                metricsNentities: {}\n                            };\n                        }\n\n                        if (!resultObject[tenant].metricsNentities[entity]) {\n                            console.log(\"Initializing metrics for: \", entity);\n                            resultObject[tenant].metricsNentities[entity] = {\n                                metrics: metrics_with_dimension[entity],\n                                entityList: []\n                            };\n                        }\n\n                        resultObject[tenant].metricsNentities[entity].entityList = values;\n                    }\n                } else {\n                    console.log(`Key ${dt_entities[k]} not found in metrics_with_dimension`);\n                }\n            }\n        }\n    }\n    console.log(resultObject);\n    return resultObject;\n}\n\nasync function populateEntityList(dynatraceUrl, apiToken, entityType) {\n    console.log(\"In populateEntityList for: \", dynatraceUrl);\n    var queryUrl = dynatraceUrl + \"api/v2/entities?pageSize=500&entitySelector=type(\\\"\" + entityType + \"\\\")\";\n    console.log(queryUrl);\n\n    var headers = new Headers();\n    headers.append(\"Authorization\", \"Api-Token \" + apiToken);\n    headers.append(\"Accept\", \"application/json; charset=utf-8\");\n\n    var requestOptions = {\n        method: 'GET',\n        headers: headers\n    };\n\n    try {\n        var response = await fetch(queryUrl, requestOptions);\n        var result = await response.json();\n\n        //console.log(\"RESULT\", result[\"entities\"]);\n        return result[\"entities\"];\n    } catch (error) {\n        console.log(\"Error fetching for \" + entityType + \":\", error);\n        return null;\n    }\n}\n"
+      },
+      "action": "dynatrace.automations:run-javascript",
+      "position": {
+        "x": 0,
+        "y": 2
+      },
+      "conditions": {
+        "states": {
+          "configure_tenants": "OK"
+        }
+      },
+      "description": "Run custom JavaScript code.",
+      "predecessors": [
+        "configure_tenants"
+      ]
+    },
+    "pull_data_from_remote_tenants": {
+      "name": "pull_data_from_remote_tenants",
+      "input": {
+        "script": "import { execution } from '@dynatrace-sdk/automation-utils';\n\nexport default async function ({ executionId }) {\n  const ex = await execution(executionId);\n  const result = await ex.result(\"populate_entity_list\");\n  \n  //console.log(result[\"tenant\"], result[\"metrics_with_dimension\"], result[\"entityList\"]);\n\n  var resultObject = await fetchAllMetrics(result[\"data\"]);\n  return { triggeredBy: ex.trigger, value: resultObject };\n}\n\n// Function to populate all metrics\nasync function fetchAllMetrics(data) {\n    console.log(\"In fetchAllMetrics\");\n    var resultObject = {};\n\n    for (var tenant in data) {\n        if (data.hasOwnProperty(tenant)) {\n            var tenantInfo = data[tenant];\n            //console.log(\"Fetching for tenant\", tenantInfo);\n          \n            for (var entity in tenantInfo[\"metricsNentities\"]) {\n              if (tenantInfo[\"metricsNentities\"].hasOwnProperty(entity)) {\n                console.log(\"Type:\", entity);\n\n                var metrics = tenantInfo[\"metricsNentities\"][entity][\"metrics\"];\n                var entityList = tenantInfo[\"metricsNentities\"][entity][\"entityList\"];\n                \n                for (var i = 0; i < metrics.length; i++) {\n                    var metric = metrics[i][\"name\"];\n                    var metric_string = metrics[i][\"metric_string\"];\n\n                    //console.log(\"metrics:\", metric_string, metric);\n                    var values = await fetchMetrics(tenantInfo[\"dynatraceUrl\"],tenantInfo[\"apiToken\"], metric_string, entityList);\n                    if (values !== null) {\n                        if (!resultObject[tenant]) {\n                            resultObject[tenant] = {};\n                        }\n                        if (!resultObject[tenant][entity]) {\n                            resultObject[tenant][entity] = {};\n                        }\n                        if (!resultObject[tenant][entity][metric]) {\n                            resultObject[tenant][entity][metric] = {};\n                        }\n\n                        resultObject[tenant][entity][metric] = values;\n                        //if (tenantInfo[\"dynatraceUrl\"] == \"https://ykd61701.sprint.dynatracelabs.com/\") {\n                        //  console.log(\"allValues->:\", resultObject);\n                        //}                  \n                      \n                    }\n                 }\n              }\n           }\n        }\n    }\n    //console.log(\"Metrics:\", JSON.stringify(resultObject, null, 4));\n    console.log(\"Metrics:\", resultObject);\n    return resultObject;\n}\n\n// Function to make API call to pull the metric data\nasync function fetchMetrics(dynatraceUrl, apiToken, metric_string, entityList) {\n    console.log(\"In fetchMetrics for: \", dynatraceUrl, metric_string);\n    var allValues = {};\n\n  \n    for (var j = 0; j < entityList.length; j++) {\n      var queryUrl = dynatraceUrl + \"api/v2/metrics/query?metricSelector=\" + metric_string + \"&entitySelector=entityId(\\\"\" + entityList[j].entityId +  \"\\\")\";\n      console.log(queryUrl, entityList[j].entityId, entityList[j].displayName );\n  \n      var headers = new Headers();\n      headers.append(\"Authorization\", \"Api-Token \" + apiToken);\n      headers.append(\"Accept\", \"application/json; charset=utf-8\");\n  \n      var requestOptions = {\n          method: 'GET',\n          headers: headers\n      };\n  \n      try {\n          var response = await fetch(queryUrl, requestOptions);\n          var result = await response.json();\n        \n        if (!allValues[entityList[j].displayName]) {\n            allValues[entityList[j].displayName] = [];\n        }\n        if (result.result && result.result.length > 0 && result.result[0].data && result.result[0].data.length > 0) {    \n          allValues[entityList[j].displayName].push(result.result[0].data[0].values[0]);  \n        }\n        \n        \n    } catch (error) {\n        console.log(\"Error fetching for \" + metric_string + \":\", error);\n    }\n  }\n  return allValues;\n}"
+      },
+      "action": "dynatrace.automations:run-javascript",
+      "active": true,
+      "position": {
+        "x": 0,
+        "y": 3
+      },
+      "conditions": {
+        "states": {
+          "populate_entity_list": "OK"
+        }
+      },
+      "description": "Build a custom task running js Code",
+      "predecessors": [
+        "populate_entity_list"
+      ]
+    }
+  },
+  "description": "",
+  "actor": "56950d1e-d9e8-4c6f-9c70-46b093c4434d",
+  "owner": "56950d1e-d9e8-4c6f-9c70-46b093c4434d",
+  "ownerType": "USER",
+  "isPrivate": true,
+  "trigger": {
+    "schedule": {
+      "isActive": false,
+      "isFaulty": false,
+      "trigger": {
+        "type": "interval",
+        "intervalMinutes": 120
+      },
+      "rule": null,
+      "filterParameters": {
+        "earliestStart": "2025-01-28",
+        "earliestStartTime": "23:32"
+      },
+      "timezone": "Australia/Sydney",
+      "inputs": {},
+      "nextExecution": null
+    }
+  },
+  "schemaVersion": 3,
+  "result": null,
+  "input": {},
+  "type": "STANDARD"
+}
